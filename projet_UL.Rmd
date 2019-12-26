@@ -1,0 +1,296 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Exercice 1 : Simulation
+
+## Question 1: Simulation of a sample of 1000 vectors from a 2 dimensional mixture with 2 components
+```{r}
+library(MASS)
+pi.1 = 0.1
+pi.2 = 0.9
+mu.1 = c(1,2)
+mu.2 = c(1,2)
+sigma.1 = diag(2)
+sigma.2 = 4*diag(2)
+```
+
+
+La fonction rmvnormmix prend quatre arguments:
+
+* n: Le nombre d'échantillons simmulés,
+* lambda : un veceur contenant les proportions de chacunes des composantes du modèle de mélange,
+* mu: une matrice dont le nombre de colonnes correspond au nombre de composantes du modèle de mélange et le nombre de ligne correspond à la dimenssion de ces composantes. Ici on a 2 composantes normales bidimensionnelles donc mu ets une matrice à 2 lignes et 2 colonnes.
+* sigma: une matrice de même taille que mu et dont les colonnes contiennent les diagonales des matrices de variance-covariance des lois multidimensionnelles du modèle de mélange.
+
+
+```{r, echo=F, results='hide'}
+library(mixtools)
+data.sim = rmvnormmix(n = 1000 ,lambda = c(pi.1, pi.2), mu = cbind(mu.1,mu.2), sigma = cbind(diag(sigma.1), diag(sigma.2)))
+```
+
+## Question 2: Affichage
+
+Pour y voir plus clair, affichons le modèle de mélange que l'on vient de simuler:
+```{r}
+par(mfrow = c(1,2))
+head(data.sim, 10)
+plot(data.sim)
+plot(density(data.sim))
+```
+
+## Question 3: Contour plot
+
+```{r}
+library(ggplot2)
+ggplot(as.data.frame(data.sim), aes(x=data.sim[,1], y=data.sim[,2]) ) +
+stat_density_2d(aes(fill = ..level..), geom = "polygon", colour="white")
+```
+
+
+# Exercice 2: Mclust versus kmeans
+
+## Question 1
+On applique l'algorithme EM du package mclust sur nos données simulées. PUisque les données sont des gaussiennes multidimentionnelles avec des matrices ed variance covariance diagonales et differentes  pour chaque cluster, on choisis
+```{r}
+library(mclust, quietly = T)
+res.Mclust = Mclust(data.sim, modNames = "VII")
+table(res.Mclust$classification)
+```
+
+Par défaut, l'algorithme `Mclust` répartie toutes les observations dans la même classe. Il ne parvient pas à détecter que les données ont été obtenues à partir d'un mélange de deux gaussiennes. Cela vient en partie du fait que les deux lois simulées ont la même espérance et se confondent.
+
+## Question 2
+```{r}
+res.Mclust$parameters
+```
+
+Les moyennes et variances estimées sont très éloignées de celle utilisées pour la génération des données.
+
+## Question 3: Partition of the simulated data in 2 classes using Mclust
+```{r}
+res.Mclust2 = Mclust(data.sim, G = 2, verbose = F)
+table(res.Mclust2$classification)
+```
+
+## Question 4: Partition of the simulated data in 2 classes using kmeans
+```{r}
+res.kmeans = kmeans(data.sim, centers=2, nstart=30)
+cluster.kmeans = res.kmeans$cluster
+#pairs(data.sim, col=res.kmeans$cluster)
+```
+
+MDR LE CACA - Jsais pas si on garde ca, si oui il faudrait plot un truc pour mclust aussi je pense
+```{r}
+table(res.kmeans$cluster)
+```
+
+
+## Question 5: Comparison of Mclust and kmeans
+```{r}
+table("EM" = res.Mclust2$classification, "K-means" = res.kmeans$cluster)
+```
+
+Les deux méthodes utilisées ne répartissent pas les données dans 2 clusters identiques. Si c'était le cas, la matrice de confusion précédente aurait ses valeurs majoritairement réparties sur la diagonale.
+
+
+# Exercice 3 : EM algorithm for a Mixture of balls
+
+## Algo EM
+
+### Fonction d'initialisation
+
+Nous avons choisi d'écrire une fonction d'intialisation à l'algorithme EM se basant sur les centre obtenu par l'algorithme des kmeans en choisissant $K$ centres (correspondant aux $K$ clusters voulus).
+La matrice des moyenne est une matrice à $K$ lignes et à deux colonnes. Ainsi les vecteurs moyennes sont stocker en lignes.
+Les $\pi_k$ sont tous initialisés à la même valeur: $\frac{1}{K}$.
+Enfin les matrices de variance covariance sont initialisées avec les variances $\sigma_k$ calculées, pour chaque cluster, avec l'algorithme des k-means. Puisque nous écrivons l'algorithme EM pour des boules Gaussiennes, les matrices de variance-covariance sont supposées diagonales, ces valeurs de $\sigma_k$ sont donc suffisantes.
+```{r}
+init.kmeans.EM = function(x, K = 2){
+  mu = matrix(nrow = K, ncol = 2)
+  sigma = vector(length = K)
+  pi = rep(1/K,K)
+  cov = list()
+  res.kmeans = kmeans(x, centers = K)
+  for (i in 1:K ){
+    mu[i,1] = res.kmeans$centers[i,1]
+    mu[i,2] = res.kmeans$centers[i,2]
+    sigma[i] = sqrt(res.kmeans$withinss[i]/table(res.kmeans$cluster)[i])
+    cov[[i]] = diag(sigma[i],2)
+  }
+  
+  return(parameters = list(mu = mu, sd = sigma, covariance = cov, pi = pi))
+}
+```
+
+
+
+### E step
+L'étape E calcule l'ésperance de la variable latente $Z_{ik}$ c'est à dire la probabilité qu'a chaque cluster d'appartenir à chacun des clusters: c'est le calcul de la matrice $t_{ik}$.
+Cette matrice est initialisée comme une matrice de 0 à $n$ lignes ($n$ étant le nombre de ligne du dataset originel) et $K$ colonnes ($K$ étant le nombre supposé de clusters).
+Ainsi à l'ittération $(q)$ on a :
+$$t_{ik}^{(q)} = \frac {\pi_k^{(q)} ~\mathcal{N}_p(x_i|\mu_k^{(q)}, \Sigma_k^{(q)}= \sigma_k^{(q)}I_p)}{\sum_{j=1}^K \pi_j^{(q)} \mathcal{N}_p(x_i|\mu_j^{(q)},\Sigma_j^{(q)} = \sigma_j^{(q)} I_p)}$$
+(Les calculs aboutissant à ce résultat sont dans le document .pdf).
+```{r}
+E.step = function(x, parameters){
+  K = nrow(parameters$mu)
+  t_ik = matrix(nrow = nrow(x), ncol = K)
+  for(k in 1:K){
+    t_ik[,k] = parameters$pi[k]*mclust::dmvnorm(data = x, mean = parameters$mu[k,], sigma = parameters$covariance[[k]])
+  }
+  
+  return(t_ik = t_ik/colSums(t_ik))
+}
+```
+for j in range(0,k):
+            norm = multivariate_normal(mu[j,:], cov[j])
+            norm.pdf(data)
+            q[j,:] = pi[j]*norm.pdf(data)
+        normalization = np.sum(q,axis = 0)
+        normalization=normalization.reshape(1,normalization.shape[0])
+        q = q/normalization
+
+### M.step
+Cette étape consiste en la maximisation de la log-vraisemblance dont le calcul se base sur les $t_{ik}$ precedement explicités.
+A l'ittération $(q)$ on a :
+$$\pi_k^{(q)} = \frac{\sum_{i=1}^n t_{ik}^{(q)}}{\sum_{k=1}^K \sum_{i=1}^n t_{ik}^{(q)}}$$
+$$\mu_k^{(q)} = \frac {\sum_{i=1}^n t_{ik}^{(q)} x_i}{\sum_{i=1}^n t_{ik}^{(q)}}$$
+$$\sigma_k^{(q)} = \frac {\sum_{i=1}^nt_{ik}^{(q)} (x_i - \mu_k^{(q)})^T(x_i - \mu_k^{(q)})}{\sum_{i=1}^n t_{ik}^{(q)}}$$
+De même, pour les calculs aboutissant aux formules d'actualisation des parametres, voire le .pdf svp.
+
+
+```{r}
+M.step = function(x, t_ik, parameters){
+  K = nrow(parameters$mu)
+  n = nrow(x)
+  # Actualisation de PI
+  parameters$pi = colSums(t_ik)/sum(t_ik)
+  
+  # Actualisation de MU et SIGMA
+  x_tmp = matrix(nrow = n, ncol = 2)
+  for (k in 1:K){
+    parameters$mu[k,] = sum(x*t_ik[,k]/sum(t_ik[,k]))
+    parameters$covariance[[k]] = matrix(nrow = 2, ncol = 2)
+    for(i in 1:n){
+      x_tmp[i,] = as.matrix(x[i,]) - parameters$mu[k,]
+      parameters$sd[k] = sum(t(x_tmp) %*% as.matrix(x_tmp)*t_ik[i,k])
+    }
+    parameters$sd[k] = parameters$sd[k]/sum(t_ik[,k])
+    parameters$covariance[[k]] = diag(parameters$sd[k],2)
+  }
+    return(parameters)
+}
+```
+
+    
+### Calcul et affichage de la log-vraisemblence à ittération fixée.
+
+A l'ittération $(q)$ on a:
+$$\mathcal{L}_{incomplete}(\theta^{(q)})= \sum_{i=1}^n \sum_{k=1}^K \mathbb{E}[z_{ik}]\log(\pi_k^{(q)}) + \sum_{i=1}^n \sum_{k=1}^K \mathbb{E}[z_{ik}]\log\mathcal{N}_p(x_i|\mu_k^{(q)},\Sigma_k^{(q)}) = \sum_{i=1}^n \sum_{k=1}^K t_{ik}\log(\pi_k^{(q)}) + \sum_{i=1}^n \sum_{k=1}^K t_{ik}\log\mathcal{N}_p(x_i|\mu_k^{(q)},\Sigma_k^{(q)})$$
+```{r}
+logVrais = function(x,t_ik,parameters){
+  K = nrow(parameters$mu)
+  n = nrow(x)
+  for(k in 1:K){
+    part1 = 0
+    part2 = 0
+    for (i in 1:n){
+      part1 = part1 + t_ik[i,k]*log(parameters$pi[k])
+      part2 = part2 + log(dmvnorm(x[i,], mean = parameters$mu[k,], sigma = diag(parameters$sd[k],2)))
+    }
+  }
+  return(list(part1 = part1, part2 = part2, logvrais = part1+part2))
+}
+```
+```{r}
+logVrais = function(x, t_ik, parameters){
+  n = nrow(x)
+  K = nrow(parameters$mu)
+  clus = vector(length = n)
+  res = 0
+  for (i in 1:n){
+    clus[i] = which.max(t_ik[i,])
+    for(k in 1:K){
+      if(clus[i] == k){
+        dnorm = mclust::dmvnorm(mvrnorm(n = n, mu = parameters$mu[k,], Sigma = diag(parameters$sd[k],2)))
+        res = res + log(dnorm) + log(parameters$pi[k])
+      }
+    }
+    return(res)
+  }
+}
+```
+`
+
+```{r}
+logVrais(data.sim, test.Estep, test.Mstep)
+```
+### Algorithme EM
+```{r}
+AlgoEM = function(x, K = 2){
+  parameters = init.kmeans.EM(x, K)
+  nb.iter = 0
+  clusters = vector(length = nrow(x))
+  parameters.new = parameters
+  repeat{
+    t_ik = E.step(x, parameters) 
+    parameters.new = M.step(x,t_ik,parameters)
+    if ((sum(unlist(parameters.new) - unlist(parameters))^2)/sum(unlist(parameters.new))^2 < 1e-20 || nb.iter >20)
+      break
+    parameters = parameters.new
+    nb.iter = nb.iter + 1
+  }
+  for(i in 1:nrow(x)){clusters[i] = which.max(t_ik[i,])}
+  return(list(nb.iter = nb.iter, parameters = parameters, t_ik = t_ik, clusters = clusters))
+}
+```
+
+pb : qd on teste AlgoEM message d'erreur incompréhenssible. Pour que ça marche il faut lancer l'algo K+1 fois et aprés c'est bon!!!!! Trop bizare ...
+
+### Calcul de la log likelihood incomplete
+
+```{r}
+log.lik = function(x, pi){
+  L = matrix(nrow = nrow(x),ncol = ncol(x))
+  for(i in 1:n){
+    L[,i] = x[,i]*pi[i]
+  }
+  #return(sum(log(rowSums(L))))
+  return(L)
+}
+```
+```{r}
+L.test = log.lik(data.sim,c(pi.1,pi.2))
+log(rowSums(L.test))
+```
+
+# Exercice 5: Iris dataset
+
+```{r}
+data(iris)
+str(iris)
+```
+```{r}
+table(iris[,5])
+```
+
+```{r}
+init.iris = init.kmeans.EM(iris[,1:2], K = 5)
+init.iris
+```
+```{r}
+iris.E1 = E.step(iris[,1:2], init.iris)
+iris.M1 = M.step(iris[,1:2], iris.E1, init.iris)
+iris.E2 = E.step(iris[,1:2],iris.M1)
+iris.M2 = M.step(iris[,1:2], iris.E2, iris.M1)
+iris.E3 = E.step(iris[,1:2],iris.M2)
+test = apply(iris.E2,1,which.max)
+table(test)
+```
+```{r}
+AlgoEM(data.sim,K=3)
+```
+
+
+
+
